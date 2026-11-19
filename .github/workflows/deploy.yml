@@ -1,0 +1,85 @@
+
+name: Deploy Tangyuan Diary
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '汤圆观察日记-最新版源码.zip'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Extract source
+        run: |
+          mkdir source
+          unzip -q "汤圆观察日记-最新版源码.zip" -d source
+          APP_DIR="$(dirname "$(find source -name package.json | head -n 1)")"
+          test -f "$APP_DIR/build.mjs"
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+
+      - name: Configure Wrangler
+        env:
+          DB_ID: ${{ secrets.D1_DATABASE_ID }}
+        run: |
+          test -n "$DB_ID"
+          cat > "$APP_DIR/wrangler.toml" <<EOF
+          name = "tangyuan-diary"
+          main = "dist/server/index.js"
+          compatibility_date = "2026-11-19"
+
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "tangyuan-diary"
+          database_id = "$DB_ID"
+          migrations_dir = "drizzle"
+
+          [[r2_buckets]]
+          binding = "BUCKET"
+          bucket_name = "tangyuan-diary"
+          EOF
+
+      - name: Build
+        run: |
+          cd "$APP_DIR"
+          npm run build
+
+      - name: Database migration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          cd "$APP_DIR"
+          npx --yes wrangler@4 d1 migrations apply tangyuan-diary --remote
+
+      - name: Set access secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          OWNER_KEY: ${{ secrets.OWNER_KEY }}
+          FRIEND_KEY: ${{ secrets.FRIEND_KEY }}
+          SHARED_KEY: ${{ secrets.SHARED_KEY }}
+        run: |
+          cd "$APP_DIR"
+          printf '%s' "$OWNER_KEY" | npx --yes wrangler@4 secret put OWNER_KEY
+          printf '%s' "$FRIEND_KEY" | npx --yes wrangler@4 secret put FRIEND_KEY
+          printf '%s' "$SHARED_KEY" | npx --yes wrangler@4 secret put SHARED_KEY
+
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          cd "$APP_DIR"
+          npx --yes wrangler@4 deploy
